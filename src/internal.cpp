@@ -90,6 +90,35 @@ void Internal::MessageHandler( Verbosity msgType, const char* msg )
     printf( ": %s", msg );
 }
 
+void Internal::LatenciInfo(sFrameOfMocapData* data, void* pUserData, Internal &internal)
+{
+    NatNetClient* pClient = (NatNetClient*) pUserData;
+    // This figure may appear slightly higher than the "software latency" reported in the Motive user interface,
+    // because it additionally includes the time spent preparing to stream the data via NatNet.
+    const uint64_t softwareLatencyHostTicks = data->TransmitTimestamp - data->CameraDataReceivedTimestamp;
+    const double softwareLatencyMillisec = (softwareLatencyHostTicks * 1000) / static_cast<double>(internal.g_serverDescription.HighResClockFrequency);
+    // Transit latency is defined as the span of time between Motive transmitting the frame of data, and its reception by the client (now).
+    // The SecondsSinceHostTimestamp method relies on NatNetClient's internal clock synchronization with the server using Cristian's algorithm.
+    const double transitLatencyMillisec = pClient->SecondsSinceHostTimestamp( data->TransmitTimestamp ) * 1000.0;
+    ROS_INFO_COND(internal.rosparam.log_latencies, "Software latency : %.2lf milliseconds", softwareLatencyMillisec);
+    // If it's unavailable (for example, with USB camera systems, or during playback), this field will be zero.
+    const bool bSystemLatencyAvailable = data->CameraMidExposureTimestamp != 0;
+    if ( bSystemLatencyAvailable )
+    {
+        const uint64_t systemLatencyHostTicks = data->TransmitTimestamp - data->CameraMidExposureTimestamp;
+        const double systemLatencyMillisec = (systemLatencyHostTicks * 1000) / static_cast<double>(internal.g_serverDescription.HighResClockFrequency);
+        
+        const double clientLatencyMillisec = pClient->SecondsSinceHostTimestamp( data->CameraMidExposureTimestamp ) * 1000.0;
+        ROS_INFO_COND(internal.rosparam.log_latencies,  "System latency : %.2lf milliseconds", systemLatencyMillisec );
+        ROS_INFO_COND(internal.rosparam.log_latencies,  "Total client latency : %.2lf milliseconds (transit time +%.2lf ms)", clientLatencyMillisec, transitLatencyMillisec );
+    }
+    else
+    {
+        ROS_INFO_COND(internal.rosparam.log_latencies,  "Transit latency : %.2lf milliseconds", transitLatencyMillisec );
+    }
+}
+
+
 void Internal::Info(NatNetClient* g_pClient, ros::NodeHandle &n)
 {
     ROS_INFO("[SampleClient] Requesting Data Descriptions...");
@@ -130,6 +159,7 @@ void Internal::Info(NatNetClient* g_pClient, ros::NodeHandle &n)
                         // Creating publisher for the markers of the rigid bodies
                         if(rosparam.pub_rigid_body_marker)
                             this->RigidbodyMarkerPub[std::to_string(pRB->ID)+std::to_string(markerIdx+1)] = n.advertise<geometry_msgs::PointStamped>(body_name+"/marker"+std::to_string(markerIdx)+"/pose", 50);
+                            std::cout << "Found marker: " << std::to_string(pRB->ID)+std::to_string(markerIdx+1) << std::endl;
                         ROS_INFO_COND(rosparam.log_internals,  "\tMarker #%d:", markerIdx );
                         ROS_INFO_COND(rosparam.log_internals,  "\t\tPosition: %.2f, %.2f, %.2f", markerPosition[0], markerPosition[1], markerPosition[2] );
 
@@ -168,35 +198,7 @@ void Internal::Info(NatNetClient* g_pClient, ros::NodeHandle &n)
     }
 }
 
-void Internal::LatenciInfo(sFrameOfMocapData* data, void* pUserData, Internal &internal)
-{
-    NatNetClient* pClient = (NatNetClient*) pUserData;
-    // This figure may appear slightly higher than the "software latency" reported in the Motive user interface,
-    // because it additionally includes the time spent preparing to stream the data via NatNet.
-    const uint64_t softwareLatencyHostTicks = data->TransmitTimestamp - data->CameraDataReceivedTimestamp;
-    const double softwareLatencyMillisec = (softwareLatencyHostTicks * 1000) / static_cast<double>(internal.g_serverDescription.HighResClockFrequency);
-    // Transit latency is defined as the span of time between Motive transmitting the frame of data, and its reception by the client (now).
-    // The SecondsSinceHostTimestamp method relies on NatNetClient's internal clock synchronization with the server using Cristian's algorithm.
-    const double transitLatencyMillisec = pClient->SecondsSinceHostTimestamp( data->TransmitTimestamp ) * 1000.0;
-    ROS_INFO_COND(internal.rosparam.log_latencies, "Software latency : %.2lf milliseconds", softwareLatencyMillisec);
-    // If it's unavailable (for example, with USB camera systems, or during playback), this field will be zero.
-    const bool bSystemLatencyAvailable = data->CameraMidExposureTimestamp != 0;
-    if ( bSystemLatencyAvailable )
-    {
-        const uint64_t systemLatencyHostTicks = data->TransmitTimestamp - data->CameraMidExposureTimestamp;
-        const double systemLatencyMillisec = (systemLatencyHostTicks * 1000) / static_cast<double>(internal.g_serverDescription.HighResClockFrequency);
-        
-        const double clientLatencyMillisec = pClient->SecondsSinceHostTimestamp( data->CameraMidExposureTimestamp ) * 1000.0;
-        ROS_INFO_COND(internal.rosparam.log_latencies,  "System latency : %.2lf milliseconds", systemLatencyMillisec );
-        ROS_INFO_COND(internal.rosparam.log_latencies,  "Total client latency : %.2lf milliseconds (transit time +%.2lf ms)", clientLatencyMillisec, transitLatencyMillisec );
-    }
-    else
-    {
-        ROS_INFO_COND(internal.rosparam.log_latencies,  "Transit latency : %.2lf milliseconds", transitLatencyMillisec );
-    }
-}
-
-void Internal::DataHandler(sFrameOfMocapData* data, void* pUserData, Internal &internal)
+void Internal::DataHandler(sFrameOfMocapData* data, NatNetClient* pUserData, Internal &internal)
 {   
     int i=0;
     ROS_INFO_COND(internal.rosparam.log_frames, "FrameID : %d", data->iFrame);
@@ -207,7 +209,17 @@ void Internal::DataHandler(sFrameOfMocapData* data, void* pUserData, Internal &i
         {
             if(internal.rosparam.pub_rigid_body)
             {
+                 //std::cout << "nRigidBodies: " << data->RigidBodies[i].nMarkers << std::endl; // data->LabeledMarkers[i] 
                 PubRigidbodyPose(data->RigidBodies[i], internal);
+                if (data->nRigidBodies == 1){
+                    // std::cout << data->nLabeledMarkers << std::endl;
+                    for(int j=0; j < data->nLabeledMarkers; j++) 
+                    {       
+                        //  std::cout << data->nLabeledMarkers << std::endl;
+                        PubRigidbodyMarker(data->LabeledMarkers[j], j+1, data->RigidBodies[i].ID, internal);
+                        // data->LabeledMarkers
+                    }
+                }
             }
         ROS_INFO_COND(internal.rosparam.log_frames, "Rigid Body [ID=%d  Error=%3.2f]", data->RigidBodies[i].ID, data->RigidBodies[i].MeanError);//, bTrackingValid);
         ROS_INFO_COND(internal.rosparam.log_frames, "x\ty\tz\tqx\tqy\tqz\tqw");
@@ -233,7 +245,7 @@ void Internal::DataHandler(sFrameOfMocapData* data, void* pUserData, Internal &i
         }
         if(internal.rosparam.pub_rigid_body_marker && !bUnlabeled)
         {
-            PubRigidbodyMarker(data->LabeledMarkers[i], internal);
+            //PubRigidbodyMarker(data->LabeledMarkers[i], internal);
         }
     }
     if (internal.rosparam.pub_individual_marker)
@@ -256,6 +268,13 @@ void Internal::DataHandler(sFrameOfMocapData* data, void* pUserData, Internal &i
 
 void Internal::PubRigidbodyPose(sRigidBodyData &data, Internal &internal)
 {
+
+    // std::cout << data.ID << std::endl;
+    // auto pClient = reinterpret_cast<Internal *>(pUserData);
+    // NatNetClient* pClient = (NatNetClient*) pUserData;
+    //  sDataDescriptions* pDataDefs = NULL;
+    //  int iResult = pUserData->GetDataDescriptionList(&pDataDefs);
+
     // Creating a msg to put data related to the rigid body and 
     geometry_msgs::PoseStamped msgRigidBodyPose;
     msgRigidBodyPose.header.frame_id = internal.rosparam.globalFrame;
@@ -336,11 +355,13 @@ void Internal::PubPointCloud(sMarker &data, Internal &internal)
     internal.msgPointcloud.points.push_back(msgPoint);
 }
 
-void Internal::PubRigidbodyMarker(sMarker &data, Internal &internal)
+void Internal::PubRigidbodyMarker(sMarker &data, int markerID, int modelID,  Internal &internal)
 {
-    int modelID, markerID;
-    NatNet_DecodeID( data.ID, &modelID, &markerID );
+    //int modelID, markerID;
+    //NatNet_DecodeID( data.ID, &modelID, &markerID );
 
+    // std::cout << "i: " << markerID  <<  data.x <<  data.y <<  data.z << std::endl;
+    
     geometry_msgs::PointStamped msgMarkerPose;
     msgMarkerPose.header.frame_id = std::to_string(modelID)+std::to_string(markerID);
     msgMarkerPose.header.stamp = ros::Time::now();
@@ -349,6 +370,9 @@ void Internal::PubRigidbodyMarker(sMarker &data, Internal &internal)
     msgMarkerPose.point.y = data.y;
     msgMarkerPose.point.z = data.z;
 
+    //std::cout << std::to_string(modelID)+std::to_string(markerID) << std::endl;
+
+    //internal.RigidbodyMarkerPub[std::to_string(i)].publish(msgMarkerPose);
     internal.RigidbodyMarkerPub[std::to_string(modelID)+std::to_string(markerID)].publish(msgMarkerPose);
 
 }

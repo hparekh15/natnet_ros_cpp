@@ -10,7 +10,7 @@ void FrameCallback(sFrameOfMocapData *data, void* pUserData)
     auto pClient = reinterpret_cast<Internal *>(pUserData);
     if (internal.rosparam.log_latencies)
         pClient->LatenciInfo(data, pUserData, internal);
-    pClient->DataHandler(data, pUserData, internal);
+    pClient->DataHandler(data, (NatNetClient *) pUserData, internal);
 }
 
 int main( int argc, char **argv)

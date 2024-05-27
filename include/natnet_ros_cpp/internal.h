@@ -59,13 +59,13 @@ public:
     void LatenciInfo(sFrameOfMocapData* data, void* pUserData, Internal &internal);
     
     // Handles the data from the frame and publish it as ROS topics
-    void DataHandler(sFrameOfMocapData* data, void* pUserData, Internal &internal);
+    void DataHandler(sFrameOfMocapData* data, NatNetClient* pUserData, Internal &internal);
 
     // Publishes the data of rigidbodies
     void PubRigidbodyPose(sRigidBodyData &data, Internal &internal);
 
     // Publish markers of the rigidbodies
-    void PubRigidbodyMarker(sMarker &data, Internal &internal);
+    void PubRigidbodyMarker(sMarker &data, int markerID, int modelID,  Internal &internal);
 
     // Publish Single marker as the Rigidbody and TF
     void PubMarkerPose(sMarker &data, Internal &internal);
